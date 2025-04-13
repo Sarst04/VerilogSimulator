@@ -301,7 +301,7 @@ private:
             {
                 if (!check_end()) 
                 {
-                    int delay = std::stoi(tokens[pos].value);
+                    int delay = stoi(tokens[pos].value);
                     gateNode->To1Delay = delay;
                     gateNode->To0Delay = delay;
                     resume();

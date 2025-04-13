@@ -32,7 +32,7 @@ void verilogSimulator(int argc, char *argv[])
     parseTreeNode* root = parser.parse();
     
     // uncomment to see parse tree
-    //parser.printParseTree(root);
+    // parser.printParseTree(root);
 
     EventScheduler sim;
     
@@ -87,7 +87,11 @@ void verilogSimulator(int argc, char *argv[])
             throw runtime_error("Unknown gate");
         
     }
-    
+
+    for (auto& gate : gate_instances) {
+        gate->update_delays_based_on_load();
+    }
+
     for (const auto& test : test_value) 
     {
         sim.schedule(test.time, [&, test]() {wire_map[input_order[test.position]]->set(test.value);}, EventType::Timed);
@@ -96,6 +100,7 @@ void verilogSimulator(int argc, char *argv[])
     sim.run();
 
     reportGatePowers(gate_instances);
+    printWireFanouts(wire_map);
     
     delete root;
 }

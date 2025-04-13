@@ -5,7 +5,7 @@ constexpr char LOGIC_1 = '1';
 constexpr char LOGIC_X = 'x';
 constexpr char LOGIC_Z = 'z';
 
-using Time = uint64_t;
+using Time = double;
 
 enum class EventType { Delta, Timed };
 
@@ -26,8 +26,10 @@ public:
     WireType type;
 
     Wire(const string& name, EventScheduler& scheduler, WireType type);
+    size_t get_listeners_quantity();
     void set(char new_value);
     void attach(Gate* gate);
+
 };
 
 class Gate {
@@ -36,6 +38,7 @@ public:
     virtual void evaluate() = 0;
     virtual PowerStats get_power_stats() const = 0;
     virtual string get_name() const = 0;
+    virtual void update_delays_based_on_load() = 0;
         
 protected:
     PowerStats calculate_power(char old_val, char new_val) const {
@@ -51,6 +54,9 @@ protected:
         PowerStats stats = calculate_power(old_val, new_val);
         current_stats.dynamic_power += stats.dynamic_power;
         current_stats.static_power += stats.static_power;
+    }
+    Time calculate_load_delay(Time base_delay, size_t fan_out) const {
+        return (base_delay * static_cast<Time>(fan_out * LOAD_DEPENDENT_DELAY_FACTOR)+1)*AGING_EFFECT;
     }
 };
 
@@ -140,6 +146,11 @@ void Wire::set(char new_value) {
 void Wire::attach(Gate* gate) {
     listeners.push_back(gate);
 }
+size_t Wire::get_listeners_quantity() { 
+    if (type==WireType::OUTPUT)
+        return 1;
+    return listeners.size(); 
+}
 
 class AndGate : public Gate {
     Wire& input_a_;
@@ -158,7 +169,11 @@ public:
         a.attach(this);
         b.attach(this);
     }
-
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
+    }
     string get_name() const override { return gate_name; }
     void evaluate() override 
     {
@@ -206,7 +221,11 @@ public:
         a.attach(this);
         b.attach(this);
     }
-
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
+    }
     string get_name() const override { return gate_name; }
     void evaluate() override 
     {
@@ -250,6 +269,11 @@ public:
           delay_rise_(rise_delay), delay_fall_(fall_delay), 
           gate_name(name){
         a.attach(this);
+    }
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
     }
 
     string get_name() const override { return gate_name; }
@@ -296,6 +320,11 @@ public:
           gate_name(name){
         a.attach(this);
         b.attach(this);
+    }
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
     }
 
     string get_name() const override { return gate_name; }
@@ -344,6 +373,11 @@ public:
         a.attach(this);
         b.attach(this);
     }
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
+    }
 
     string get_name() const override { return gate_name; }
     void evaluate() override 
@@ -390,7 +424,11 @@ public:
         a.attach(this);
         b.attach(this);
     }
-
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
+    }
     string get_name() const override { return gate_name; }
     void evaluate() override 
     {
@@ -437,7 +475,11 @@ public:
         a.attach(this);
         b.attach(this);
     }
-
+    void update_delays_based_on_load() override {
+        size_t fan_out = output_.get_listeners_quantity();
+        delay_rise_ = calculate_load_delay(delay_rise_, fan_out);
+        delay_fall_ = calculate_load_delay(delay_fall_, fan_out);
+    }
     string get_name() const override { return gate_name; }
     void evaluate() override 
     {
@@ -467,40 +509,107 @@ public:
     }
 };
 
+
+
+struct GatePowerData {
+    string name;
+    double dynamic_power;
+    double static_power;
+    double total_power;
     
+    bool operator<(const GatePowerData& other) const {
+        return total_power > other.total_power;
+    }
+};
+
 void reportGatePowers(const vector<unique_ptr<Gate>>& gates) 
 {
-    
+    vector<GatePowerData> power_data;
     double total_dynamic = 0.0;
     double total_static = 0.0;
     double total_power = 0.0;
-    
 
-    double most_power=0;
-    string most_power_name;
-    cout << "----- Gate Power Report -----" << endl;
     for (const auto& gate : gates) 
     {
-        string gateName = gate->get_name();
         PowerStats stats = gate->get_power_stats();
-        double dynamic_power = stats.dynamic_power;
-        double static_power  = stats.static_power;
-        if (dynamic_power > most_power)
-        {
-            most_power = dynamic_power;
-            most_power_name = gateName;
-        }
-        cout << "Gate \"" << gateName << "\": "
-             << "Dynamic Power = " << dynamic_power << " W, "
-             << "Static Power = " << static_power << " W, "
-             << "Total Power = " << dynamic_power + static_power << " W" << endl;
-        total_dynamic += dynamic_power;
-        total_static += static_power;
-        total_power +=  dynamic_power + static_power ;
+        GatePowerData data{
+            gate->get_name(),
+            stats.dynamic_power,
+            stats.static_power,
+            stats.dynamic_power + stats.static_power
+        };
+        
+        total_dynamic += data.dynamic_power;
+        total_static += data.static_power;
+        total_power += data.total_power;
+
+        power_data.push_back(data);
+        
     }
-    cout << "----- Total Power Report -----" << endl;
-    cout <<  "Dynamic Power = " << total_dynamic << ".\n";
-    cout <<  "Static Power = " << total_static << ".\n";
-    cout <<  "Total Power = " << total_power << ".\n";
-    cout << "Gate " << most_power_name << "use most power( " << most_power<<" )"<<".\n";
+
+    sort(power_data.begin(), power_data.end());
+
+    cout << "\n┌──────────────────────┬──────────────────┬──────────────────┬──────────────────┐\n";
+    cout << "│" << COLOR_CYAN << "       Gate Name      " << COLOR_RESET << "│" 
+         << COLOR_CYAN << "  Dynamic Power   " << COLOR_RESET << "│" 
+         << COLOR_CYAN << "   Static Power   " << COLOR_RESET << "│" 
+         << COLOR_CYAN << "   Total Power    " << COLOR_RESET << "│\n";
+    cout << "├──────────────────────┼──────────────────┼──────────────────┼──────────────────┤\n";
+    
+    for (const auto& data : power_data) 
+    {
+        const char* name_color = (data.dynamic_power > HIGH_POWER_THRESHOLD) ? COLOR_RED : "";
+        const char* dyn_color = (data.dynamic_power > HIGH_POWER_THRESHOLD) ? COLOR_RED : "";
+        const char* total_color = (data.total_power > HIGH_POWER_THRESHOLD) ? COLOR_YELLOW : "";
+        
+        printf("│ %s%-20s%s │ %s%16.2e%s │ %16.2e │ %s%16.2e%s │\n",
+                   name_color, data.name.c_str(), COLOR_RESET,
+                   dyn_color, data.dynamic_power, COLOR_RESET,
+                   data.static_power,
+                   total_color, data.total_power, COLOR_RESET);
+    }
+    
+    cout << "└──────────────────────┴──────────────────┴──────────────────┴──────────────────┘\n";
+
+    cout << "\n" << COLOR_GREEN << "SUMMARY:" << COLOR_RESET << "\n";
+    cout << "Total Dynamic Power: " << COLOR_YELLOW << total_dynamic << " W" << COLOR_RESET << "\n";
+    cout << "Total Static Power:  " << total_static << " W\n";
+    cout << "Total Power:         " << COLOR_YELLOW << total_power << " W" << COLOR_RESET << "\n";
+}
+
+void printWireFanouts(const std::unordered_map<std::string, std::unique_ptr<Wire>>& wire_map) 
+{
+    vector<pair<string, size_t>> fanouts;
+    size_t max_fanout = 0;
+    string max_fanout_wire;
+    
+    for (const auto& [name, wire] : wire_map) 
+    {
+        size_t count = wire->get_listeners_quantity();
+        fanouts.emplace_back(name, count);
+        
+        if (count > max_fanout) 
+        {
+            max_fanout = count;
+            max_fanout_wire = name;
+        }
+    }
+    sort(fanouts.begin(), fanouts.end(),[](const auto& a , const auto& b){return a.second > b.second;});
+    
+    std::cout << "\n┌──────────────────────┬──────────────────┐\n";
+    std::cout << "│" << COLOR_CYAN << "      Wire Name       " << COLOR_RESET << "│" 
+              << COLOR_CYAN << "  Fanout Count    " << COLOR_RESET << "│\n";
+    std::cout << "├──────────────────────┼──────────────────┤\n";
+    
+    for (const auto& [name, count] : fanouts) 
+    {
+        const char* color = (count > HIGH_FANOUT_THRESHOLD) ? COLOR_MAGENTA : "";
+        printf("│ %s%-20s%s │ %s%16zu%s │\n",
+                   color, name.c_str(), COLOR_RESET,
+                   color, count, COLOR_RESET);
+    }
+    
+    cout << "└──────────────────────┴──────────────────┘\n";
+    cout << "\n" << COLOR_GREEN << "SUMMARY:" << COLOR_RESET << "\n";
+    cout << "Total Wires: " << wire_map.size() << "\n";
 }
