@@ -1,1 +1,1 @@
-# MHDL
+# Verilog simulator
